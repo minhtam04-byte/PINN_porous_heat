@@ -3,7 +3,6 @@ import numpy as np
 import os
 
 def process_pressure(p_raw):
-    # Các tham số nên để bên trong hàm hoặc truyền vào làm tham số
     U_MAX = 0.10
     CS2 = 1.0 / 3.0
     return (p_raw - CS2) / (U_MAX ** 2)
@@ -35,4 +34,5 @@ def load_dataset(Path="", coord_file="coordinates.csv", file_prefix='field40_', 
         full_df = pd.concat(data_list, ignore_index=True)
         print(f"Loaded {len(full_df)} points.")
         return full_df
+
     return None
