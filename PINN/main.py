@@ -68,34 +68,32 @@ def run_training():
 
     print(f"Đang chạy Adam trên {n_dev} thiết bị...")
     for step in range(50001):
-        # Cập nhật trọng số NTK định kỳ (ví dụ mỗi 1000 bước) để cân bằng Data và Physics loss
         if step % 1000 == 0:
             model.state = model.update_weights(model.state, sharded_batch)
             
-        # Bước huấn luyện Adam
         model.state = model.step(model.state, sharded_batch)
         
         if step % 1000 == 0:
-            # Lấy tham số và trọng số 
             params_curr = jax.tree_util.tree_map(lambda x: x[0], model.state.params)
             weights_curr = jax.tree_util.tree_map(lambda x: x[0], model.state.weights)
             ls = model.losses(params_curr, batch)
             
             total_loss = ls['data'] * weights_curr['data'] + ls['phys'] * weights_curr['phys']
-            print(f"Step {step:5d} | Total Loss: {total_loss:.6e} | Data: {ls['data']:.4e} | Phys: {ls['phys']:.4e}")
+            print(f"Step {step:5d} | Total Loss: {jnp.sum(total_loss):.6e} | Data: {jnp.sum(ls['data']):.4e} | Phys: {jnp.sum(ls['phys']):.4e}")
 
     # --- 4. GIAI ĐOẠN 2: TỐI ƯU HÓA L-BFGS ---
     print("\nĐang chạy L-BFGS để hội tụ sâu...")
     params_adam = jax.tree_util.tree_map(lambda x: x[0], model.state.params)
     weights_final = jax.tree_util.tree_map(lambda x: x[0], model.state.weights)
     
-    # Định nghĩa hàm 
     def objective_fn(p, b):
         l = model.losses(p, b)
-        return l['data'] * weights_final['data'] + l['phys'] * weights_final['phys']
+        total_loss = l['data'] * weights_final['data'] + l['phys'] * weights_final['phys']
+        return jnp.sum(total_loss) # Đã sửa: Ép về scalar
 
     lbfgs = jaxopt.LBFGS(fun=objective_fn, maxiter=50000, tol=1e-12)
-    lbfgs_result = lbfgs.run(params_adam, b=batch)
+    lbfgs_result = lbfgs.run(params_adam, b=batch) 
+    # -----------------------------
     print(f"Final Loss: {objective_fn(lbfgs_result.params, batch):.6e}")
 
     # --- 5. DỰ ĐOÁN VÀ LƯU KẾT QUẢ ---
@@ -104,10 +102,7 @@ def run_training():
     x_all = jnp.array(df_pinn['x'].values)[:, None]
     y_all = jnp.array(df_pinn['y'].values)[:, None]
 
-    # Dự đoán bằng tham số tốt nhất từ L-BFGS
     u_pred, v_pred, p_pred = model.u_net(lbfgs_result.params, x_all, y_all, t_all)
-    
-    # Khử nhiễu áp suất
     p_pred = p_pred - jnp.mean(p_pred)
 
     result_file = os.path.join(PROJECT_PATH, 'Porous_Result.mat')
@@ -127,4 +122,3 @@ def run_training():
 
 if __name__ == "__main__":
     run_training()
-
