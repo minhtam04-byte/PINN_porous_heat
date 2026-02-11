@@ -122,8 +122,9 @@ def run_training():
         'Da': model.Da
     })
 
-    print(f"✅ Đã lưu kết quả tại: {result_file}")
+    print(f"Đã lưu kết quả tại: {result_file}")
     return model, lbfgs_result.params
 
 if __name__ == "__main__":
     run_training()
+
