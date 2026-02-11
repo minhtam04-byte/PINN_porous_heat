@@ -1,123 +1,81 @@
 import jax
 import jax.numpy as jnp
-import jaxopt
-import pandas as pd
-import numpy as np
-import scipy.io as sio
-import sys
-import os
+from jax import grad, vmap, jacrev
+from jaxpi.models import PINN
+from jaxpi.utils import flatten_pytree
 
-# 1. Thêm đường dẫn dự án
-project_path = '/content/drive/MyDrive/Colab_Project/D00040'
-if project_path not in sys.path:
-    sys.path.append(project_path)
+class PorousInversePINN(PINN):
+    def __init__(self, config, lb, ub, spatial_coords):
+        super().__init__(config)
+        self.lb = lb
+        self.ub = ub
+        self.spatial_coords = spatial_coords
+        self.Re = 100.0
+        self.Da = 5e-3
+        self.R = 0.5
 
-from loader import load_dataset
-from utils import DotDict
-from models import PorousInversePINN 
+    def u_net(self, params, x, y, t):
+        """Dự đoán vận tốc (u, v) và áp suất (p)"""
+        X = jnp.concatenate([t, x, y], axis=-1)
+        X_norm = 2.0 * (X - self.lb) / (self.ub - self.lb) - 1.0
+        outputs = self.state.apply_fn(params, X_norm)
+        return outputs[..., 0], outputs[..., 1], outputs[..., 2]
 
-def run_training():
-    # --- 1. CẤU HÌNH ---
-    raw_config = {
-        'seed': 42, 
-        'input_dim': 3, # t, x, y
-        'arch': {
-            'arch_name': 'ModifiedMlp', 
-            'num_layers': 8, 
-            'hidden_dim': 50, 
-            'out_dim': 3
-        },
-        'optim': {
-            'optimizer': 'Adam', 
-            'learning_rate': 1e-3, 
-            'decay_steps': 10000, 
-            'decay_rate': 0.9,
-            'beta1': 0.9,      
-            'beta2': 0.999,   
-            'eps': 1e-8,       
-            'grad_accum_steps': 1 
-        },
-        'weighting': {
-            'scheme': 'ntk', 
-            'init_weights': {'data': 1.0, 'phys': 1.0}, 
-            'momentum': 0.9
-        }
-    }
-    config = DotDict(raw_config)
+    def r_net(self, params, x, y, t):
+        """Phần dư phương trình tại 1 điểm đơn lẻ (x, y, t)"""
+        def get_u(x, y, t): return self.u_net(params, x, y, t)[0]
+        def get_v(x, y, t): return self.u_net(params, x, y, t)[1]
+        def get_p(x, y, t): return self.u_net(params, x, y, t)[2]
 
-    # --- 2. LOAD VÀ CHUẨN BỊ DỮ LIỆU ---
-    PATH = f"{project_path}/CSVdata/"
-    df_pinn = load_dataset(Path=PATH, start_step=260, end_step=360)
-    
-    if df_pinn is None:
-        print("Không tìm thấy dữ liệu tại đường dẫn cung cấp!")
-        return
+        # Đạo hàm bậc 1 & 2 
+        u_t = grad(get_u, argnums=2)(x, y, t)
+        u_x = grad(get_u, argnums=0)(x, y, t)
+        u_y = grad(get_u, argnums=1)(x, y, t)
+        v_t = grad(get_v, argnums=2)(x, y, t)
+        v_x = grad(get_v, argnums=0)(x, y, t)
+        v_y = grad(get_v, argnums=1)(x, y, t)
+        p_x = grad(get_p, argnums=0)(x, y, t)
+        p_y = grad(get_p, argnums=1)(x, y, t)
 
-    # Lấy mẫu huấn luyện
-    df_train = df_pinn.sample(20000).sort_values('t')
+        u_xx = grad(lambda x,y,t: grad(get_u, argnums=0)(x,y,t))(x, y, t)
+        u_yy = grad(lambda x,y,t: grad(get_u, argnums=1)(x,y,t))(x, y, t)
+        v_xx = grad(lambda x,y,t: grad(get_v, argnums=0)(x,y,t))(x, y, t)
+        v_yy = grad(lambda x,y,t: grad(get_v, argnums=1)(x,y,t))(x, y, t)
 
-    # --- 3. CHUẨN BỊ BATCH & DOMAIN ---
-    batch = {
-        'data': (jnp.array(df_train['t'].values)[:,None], 
-                 jnp.array(df_train['x'].values)[:,None], 
-                 jnp.array(df_train['y'].values)[:,None], 
-                 jnp.array(df_train['u'].values)[:,None], 
-                 jnp.array(df_train['v'].values)[:,None]),
-        'eqn': (jnp.array(df_train['t'].values)[:,None], 
-                jnp.array(df_train['x'].values)[:,None], 
-                jnp.array(df_train['y'].values)[:,None])
-    }
-    
-    lb = jnp.array([df_train['t'].min(), -2.5, -2.5])
-    ub = jnp.array([df_train['t'].max(), 2.5, 7.5])
-    
-    # --- 4. KHỞI TẠO MODEL ---
-    spatial_coords = jnp.array(df_train[['x', 'y']].drop_duplicates().values)
-    model = PorousInversePINN(config, lb, ub, spatial_coords)
+        u_val, v_val, _ = self.u_net(params, x, y, t)
+        is_porous = jnp.where(x**2 + y**2 <= self.R**2, 1.0, 0.0)
+        
+        f_u = u_t + (u_val*u_x + v_val*u_y) + p_x - (1.0/self.Re)*(u_xx + u_yy) + (1.0/self.Da)*u_val*is_porous
+        f_v = v_t + (u_val*v_x + v_val*v_y) + p_y - (1.0/self.Re)*(v_xx + v_yy) + (1.0/self.Da)*v_val*is_porous
+        f_e = u_x + v_y
+        
+        return f_u, f_v, f_e
 
-    # --- 5. HUẤN LUYỆN ADAM ---
-    n_dev = jax.local_device_count()
-    shard = lambda x: x[:(x.shape[0]//n_dev)*n_dev].reshape((n_dev, -1) + x.shape[1:])
-    sharded_batch = jax.tree_util.tree_map(shard, batch)
+    def losses(self, params, batch):
+        t_d, x_d, y_d, u_d, v_d = batch['data']
+        t_e, x_e, y_e = batch['eqn']
+        
+        # 1. Loss dữ liệu
+        u_p, v_p, _ = self.u_net(params, x_d, y_d, t_d)
+        loss_data = jnp.mean(jnp.square(u_p.squeeze() - u_d.squeeze()) + 
+                             jnp.square(v_p.squeeze() - v_d.squeeze()))
+        
+        # 2. Loss vật lý
+        f_u, f_v, f_e = vmap(self.r_net, (None, 0, 0, 0))(params, 
+                                                         x_e.squeeze(), 
+                                                         y_e.squeeze(), 
+                                                         t_e.squeeze())
+        loss_phys = jnp.mean(jnp.square(f_u) + jnp.square(f_v) + jnp.square(f_e))
+        return {'data': loss_data.reshape(()), 'phys': loss_phys.reshape(())}
 
-    print(f"Running Adam on {n_dev} device(s)...")
-    for step in range(50001):
-        model.state = model.step(model.state, sharded_batch)
-        if step % 1000 == 0:
-            p_curr = jax.tree_util.tree_map(lambda x: x[0], model.state.params)
-            ls = model.losses(p_curr, batch)
-            print(f"Step {step:5d} | Loss: {ls['data'] + ls['phys']:.6e}")
-
-    # --- 6. HUẤN LUYỆN L-BFGS ---
-    print("\n Running L-BFGS...")
-    params_adam = jax.tree_util.tree_map(lambda x: x[0], model.state.params)
-    
-    def obj_fn(p, b):
-        l = model.losses(p, b)
-        w = jax.tree_util.tree_map(lambda x: x[0], model.state.weights)
-        return l['data']*w['data'] + l['phys']*w['phys']
-
-    lbfgs = jaxopt.LBFGS(fun=obj_fn, maxiter=50000, tol=1e-12)
-    lbfgs_res = lbfgs.run(params_adam, batch=batch)
-
-    # --- 7. DỰ ĐOÁN & LƯU KẾT QUẢ ---
-    print("\n Saving results...")
-    t_all = jnp.array(df_pinn['t'].values)[:, None]
-    x_all = jnp.array(df_pinn['x'].values)[:, None]
-    y_all = jnp.array(df_pinn['y'].values)[:, None]
-    
-    u_p, v_p, p_p = model.u_net(lbfgs_res.params, x_all, y_all, t_all)
-    
-    result_path = f"{project_path}/Porous_Result.mat"
-    sio.savemat(result_path, {
-        'x': np.array(x_all), 
-        'y': np.array(y_all), 
-        't': np.array(t_all),
-        'u_pred': np.array(u_p), 
-        'v_pred': np.array(v_p), 
-        'p_pred': np.array(p_p - jnp.mean(p_p))
-    })
-    print(f"Xong! Kết quả lưu tại: {result_path}")
-
-if __name__ == "__main__":
-    run_training()
+    def compute_diag_ntk(self, params, batch):
+        def loss_data(p): return self.losses(p, batch)['data']
+        def loss_phys(p): return self.losses(p, batch)['phys']
+        
+        jac_data = jacrev(loss_data)(params)
+        jac_phys = jacrev(loss_phys)(params)
+        
+        ntk_data = jnp.sum(jnp.square(flatten_pytree(jac_data)))
+        ntk_phys = jnp.sum(jnp.square(flatten_pytree(jac_phys)))
+        
+        return {'data': ntk_data, 'phys': ntk_phys}
