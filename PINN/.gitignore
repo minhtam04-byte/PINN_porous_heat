@@ -1,0 +1,11 @@
+# Chặn toàn bộ dữ liệu CSV
+CSVdata/
+*.csv
+
+# Chặn kết quả đầu ra nặng
+*.mat
+Porous_Result.mat
+
+# Các file rác hệ thống
+__pycache__/
+.ipynb_checkpoints/
