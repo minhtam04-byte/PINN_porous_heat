@@ -39,7 +39,7 @@ def run_training():
         return
 
     # Lấy mẫu ngẫu nhiên 20,000 điểm để huấn luyện
-    df_train = df_pinn.sample(20000).sort_values('t')
+    df_train = df_pinn.sample(5000).sort_values('t')
 
     # Chuẩn bị Batch 
     t_d = jnp.array(df_train['t'].values)[:, None]
@@ -122,3 +122,4 @@ def run_training():
 
 if __name__ == "__main__":
     run_training()
+
