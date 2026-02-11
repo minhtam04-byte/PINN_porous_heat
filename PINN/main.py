@@ -7,7 +7,7 @@ import scipy.io as sio
 import sys
 import os
 
-# 1. THIẾT LẬP ĐƯỜNG DẪN 
+# 1.ĐƯỜNG DẪN 
 PROJECT_PATH = '/content/drive/MyDrive/Colab_Project/D00040'
 if PROJECT_PATH not in sys.path:
     sys.path.append(PROJECT_PATH)
@@ -38,10 +38,10 @@ def run_training():
         print("Lỗi: Không tìm thấy dữ liệu CSV!")
         return
 
-    # Lấy mẫu ngẫu nhiên 20,000 điểm để huấn luyện
+    # Lấy mẫu ngẫu nhiên để huấn luyện
     df_train = df_pinn.sample(5000).sort_values('t')
 
-    # Chuẩn bị Batch 
+    # Batch 
     t_d = jnp.array(df_train['t'].values)[:, None]
     x_d = jnp.array(df_train['x'].values)[:, None]
     y_d = jnp.array(df_train['y'].values)[:, None]
@@ -122,4 +122,5 @@ def run_training():
 
 if __name__ == "__main__":
     run_training()
+
 
