@@ -29,17 +29,20 @@ class PorousInversePINN(PINN):
         return u, v, p
 
     def r_net(self, params, x, y, t):
+        """
+        Hàm tính phần dư PDE (Residual).
+        """
         def get_u(x, y, t):
             u, _, _ = self.u_net(params, x[None], y[None], t[None])
-            return u[0, 0] # Trả về scalar
+            return u.reshape(()) # Trả về scalar an toàn tuyệt đối
 
         def get_v(x, y, t):
             _, v, _ = self.u_net(params, x[None], y[None], t[None])
-            return v[0, 0] # Trả về scalar
+            return v.reshape(()) # Trả về scalar an toàn tuyệt đối
 
         def get_p(x, y, t):
             _, _, p = self.u_net(params, x[None], y[None], t[None])
-            return p[0, 0] # Trả về scalar
+            return p.reshape(()) # Trả về scalar an toàn tuyệt đối
 
         # --- (AD) ---
         u_t = grad(get_u, argnums=2)(x, y, t)
@@ -83,10 +86,10 @@ class PorousInversePINN(PINN):
         # 1. Loss dữ liệu 
         u_p, v_p, _ = self.u_net(params, x_d, y_d, t_d)
         
-        #  MSE 
+        # MSE 
         loss_data = jnp.mean(jnp.square(u_p - u_d) + jnp.square(v_p - v_d))
         
-        # 2. Loss vật lý 
+        # 2. Loss vật lý
         f_u, f_v, f_e = vmap(self.r_net, (None, 0, 0, 0))(params, 
                                                           x_e.reshape(-1), 
                                                           y_e.reshape(-1), 
